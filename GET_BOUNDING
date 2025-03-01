@@ -1,0 +1,73 @@
+# Define directories
+base_video_norm = './new_dataset/video_norm'
+csv_path = './new_dataset/bounding_box.csv'
+categories = ['sludge', 'non_sludge']
+basis_dir = './new_dataset/basis'
+
+# Setup GenAI client (replace with your actual API key)
+client = genai.Client(api_key="API KEY")
+
+# Updated prompt: specifying normalized coordinates between 0 and 1.
+prompt = """
+You are an expert in computer vision specializing in isolating Sludge content.
+Given the following video frame, identify and return the bounding boxes for each distinct video clip region,
+excluding any black padding or empty spaces.
+Provide each bounding box in the format [ymin, xmin, ymax, xmax], with coordinates normalized between 0 and 1.
+If multiple screens are present, return all bounding boxes corresponding to regions with valid content.
+Respond with a JSON array of arrays, where each sub-array represents a bounding box.
+"""
+
+# Create the basis directory if it doesn't exist
+os.makedirs(basis_dir, exist_ok=True)
+for cat in categories:
+    os.makedirs(os.path.join(basis_dir, cat), exist_ok=True)
+
+# Open CSV file for writing output
+with open(csv_path, mode='w', newline='', encoding='utf-8') as csv_file:
+    writer = csv.writer(csv_file)
+    writer.writerow(["visual_path", "bounding_boxes"])
+
+    # Loop through both sludge and non_sludge videos
+    for cat in categories:
+        video_dir = os.path.join(base_video_norm, cat)
+        video_files = sorted(glob.glob(os.path.join(video_dir, "*.mp4")))
+
+        for video_file in video_files:
+            print(f"Processing bounding boxes for {video_file}")
+
+            # Extract a representative frame (using the middle frame)
+            clip = VideoFileClip(video_file)
+            frame_time = clip.duration / 2.0
+            frame = clip.get_frame(frame_time)
+            clip.close()
+
+            # Save the frame temporarily as a JPEG file for API submission
+            video_filename = os.path.basename(video_file)
+            temp_image_filename = video_filename.replace('.mp4', '.jpg')
+            temp_image_path = os.path.join(basis_dir, cat, temp_image_filename)
+
+            image = Image.fromarray(np.uint8(frame))
+            image.save(temp_image_path)
+
+            # Read the image bytes
+            with open(temp_image_path, "rb") as img_file:
+                image_bytes = img_file.read()
+
+            contents = [
+                prompt,
+                types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg")
+            ]
+            response = client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=contents
+            )
+            bounding_boxes = response.text.strip()
+            # Remove any markdown formatting (```json and ```)
+            if bounding_boxes.startswith('```json'):
+                bounding_boxes = bounding_boxes[7:]
+            if bounding_boxes.endswith('```'):
+                bounding_boxes = bounding_boxes[:-3]
+
+            # Write the image file path and corresponding bounding boxes to CSV
+            writer.writerow([temp_image_path, bounding_boxes.strip()])
+            # (Remove or comment out the break to process all videos)
